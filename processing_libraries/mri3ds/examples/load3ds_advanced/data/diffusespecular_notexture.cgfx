@@ -1,0 +1,221 @@
+
+//#define PARABOLOID
+
+// transformations
+
+float4x4 worldViewProj : WORLDVIEWPROJECTION;
+float4x4 matWorld : WORLD;
+float4x4 WorldXf : WorldMatrix;
+
+float3 cameraPos;
+float4 lightPos;
+float kC, kL, kQ;   // attenuation de la lumire (constante, linéaire, quadratique)
+
+float fogStart;
+float fogEnd;
+
+
+
+//------------------------------------
+
+struct vertexInput 
+{
+    float3 position     : POSITION;
+    float4 normal       : NORMAL;
+    //float2 uv		 	: TEXCOORD0;
+    float4 diffuse		: COLOR;
+};
+
+ 
+
+struct vertexOutput 
+{
+    float4 position	: POSITION;   
+    //float2 uv		: TEXCOORD0;
+    float3 normal   : TEXCOORD1;
+    float3 lightVec	: TEXCOORD2;
+    float3 viewVec	: TEXCOORD3;
+    float4 diffuse	: TEXCOORD4;
+	float depth		: TEXCOORD5;
+    float3 worldPos	: TEXCOORD6;
+};
+
+
+
+vertexOutput VS_DiffuseSpecular( in vertexInput IN )
+{
+    vertexOutput OUT = (vertexOutput)0;
+
+	OUT.position = mul( worldViewProj, float4(IN.position,1.0) ); 
+
+//	float4 pos = mul( matWorld, float4(IN.position, 1.0) );
+//	OUT.worldPos = pos.xyz;
+    float4 Po = float4( IN.position, 1 );
+    float3 pos = mul(WorldXf, Po).xyz;	// in "world" coordinates
+	OUT.worldPos = pos;
+
+	//float3 normal = mul( (float3x3)matWorld, IN.normal.xyz );
+	//OUT.normal = normalize( normal );
+	float4 Nn = normalize( IN.normal );
+    OUT.normal = mul(matWorld, Nn).xyz;
+
+	// if w is 1 its a point light, is 0 its a directional light
+	float3 L = ( lightPos.xyz - (pos.xyz*lightPos.w) );
+	L = normalize( L );
+	OUT.lightVec = L;
+
+	float3 E = cameraPos - pos.xyz;
+	E = normalize( E );
+	OUT.viewVec = E;
+	//OUT.viewVec = normalize( float3(matWorld[0].w, matWorld[1].w, matWorld[2].w) - pos.xyz);
+
+#ifdef FOG
+	float3 dist = distance( cameraPos, pos.xyz );
+	OUT.depth = dist.z;
+#endif
+
+//#ifdef FLIPY
+//	OUT.uv = float2( IN.uv.x, 1.0-IN.uv.y );
+//#else
+//	OUT.uv = IN.uv;
+//#endif
+
+	OUT.diffuse = IN.diffuse;
+
+
+    return OUT;
+}
+
+
+float4 PS_DiffuseSpecular( in vertexOutput IN ) : COLOR
+{
+	float4 FinalColor = 0;
+
+	// distance attenuation	
+	float d = distance(lightPos.xyz,  IN.worldPos.xyz);
+	//float attenuation = d * 0.0005;
+	float attenuation = 1.0 / (kC + kL*d + kQ*d*d);	
+
+	float3 vL = normalize( IN.lightVec );
+	float3 vV = normalize( IN.viewVec );
+	float3 vN = normalize( IN.normal );
+
+	float NdotL = max( dot( vN, vL ), 0 );
+	
+	float4 ambient = 0;//{0.1, 0.1, 0.1, 0.0};
+	float4 diffuse = 0;
+	float4 specular = 0;
+	float2 texcoord = 0;
+
+	ambient = ambient;
+	diffuse = IN.diffuse * NdotL;
+
+	float glossTerm = 1;
+	float3 vR = reflect( -vV, vN );
+	specular = pow( max(dot(vR, vL), 0), 64.0 ) * glossTerm;
+	
+	FinalColor = ambient + (diffuse + specular);// * attenuation;
+	FinalColor.a = IN.diffuse.a;
+	
+/*	// posterize effect 
+	// (take the full computed color and posterize)
+	float numColors = 8;
+	float gamma = 0.6;
+	float3 tc = FinalColor.rgb;
+	tc = pow(tc, gamma);
+	tc = tc * numColors;
+	tc = floor(tc);
+	tc = tc / numColors;
+	tc = pow(tc,1.0/gamma);
+	FinalColor = float4( tc, FinalColor.a );*/
+	
+	return FinalColor;
+}
+
+
+
+float4 PS_DiffuseSpecularWrap( in vertexOutput IN ) : COLOR
+{
+	float4 FinalColor = 0;
+
+	float4 ambient = {0.1, 0.1, 0.1, 0.0};
+	ambient = ambient;
+
+	float3 vL = normalize( IN.lightVec );
+	float3 vV = normalize( IN.viewVec );
+	float3 vN = normalize( IN.normal );
+
+	float NdotL = dot( vL, vN );
+	float4 diffuse = IN.diffuse;
+	
+	// Wrap lighting
+	float wrap = 0.3;
+	float scatterWidth = 0.5;
+	float4 scatterColor = float4(0.1, 0.0, 0.0, 1.0);
+	float NdotL_wrap = (NdotL + wrap) / (1.0 + wrap); // wrap lighting
+
+	// shadow term
+	float shadow = saturate( NdotL_wrap * 4 );
+	diffuse *= shadow;
+	
+	diffuse = diffuse * NdotL_wrap;
+	diffuse += (scatterWidth * scatterColor);
+
+	float3 vR = reflect(-vV, vN);
+	float4 specular = pow( saturate(dot(vR, vL.xyz)), 16.0 );
+
+	FinalColor = ambient + diffuse + specular;
+	FinalColor.a = IN.diffuse.a;
+
+/*
+	// Apply linear fog
+	float4 fogColor = float4( .1, .1, .1, 0 );
+	if( IN.depth < fogEnd )
+	{
+		FinalColor = lerp( FinalColor, fogColor, (IN.depth-fogStart)/(fogEnd-fogStart) );
+		FinalColor.a = IN.diffuse.a;
+	}
+	else
+	{
+		FinalColor = fogColor;
+	}
+*/
+	return FinalColor;
+}
+
+
+//---------------------------------------------------------------------------//
+technique Technique_DiffuseSpecular
+{   
+    pass Pass_DiffuseSpecular
+    {		
+		VertexProgram = compile arbvp1 VS_DiffuseSpecular();
+		FragmentProgram  = compile arbfp1 PS_DiffuseSpecular();
+
+		BlendEnable = true;
+		BlendFunc = int2(SrcAlpha, OneMinusSrcAlpha);
+		CullFaceEnable = true;
+		CullFace = back;
+		DepthTestEnable = true;
+		DepthFunc = LEqual;
+		DepthMask = true;
+	}
+}
+
+//---------------------------------------------------------------------------//
+technique Technique_DiffuseSpecularWrap
+{   
+    pass Pass_DiffuseSpecularWrap
+    {		
+		VertexProgram = compile arbvp1 VS_DiffuseSpecular();
+		FragmentProgram  = compile arbfp1 PS_DiffuseSpecularWrap();
+/*
+		BlendEnable = true;
+		BlendFunc = int2(SrcAlpha, OneMinusSrcAlpha);
+		CullFaceEnable = true;
+		CullFace = back;
+		DepthTestEnable = true;
+		DepthFunc = LEqual;
+		DepthMask = true;*/
+    }
+}
